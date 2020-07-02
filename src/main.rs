@@ -11,22 +11,18 @@ use reqwest::Error;
 
 #[get("/keys?<studio_id>&<yesterday>")]
 fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Option<String> {
-    let connection = open_redis_connection();
+    let mut connection = open_redis_connection()?;
     let key = create_redis_search_key(&studio_id, yesterday);
-    if connection.is_none() {
-        return Option::None;
-    }
-    let redis_keys: Option<Vec<String>> = match (connection.unwrap()).keys(&key) {
+    let redis_keys: Option<Vec<String>> = match connection.keys(&key) {
         Ok(it) => it,
         Err(_err) => {
             println!("No keys found for studio with id: {} and key: {}", &studio_id, &key);
-            Option::None
+            None
         }
     };
-    if redis_keys.is_some() {
-        extract_newest_key(redis_keys.unwrap())
-    } else {
-        Option::None
+    match redis_keys {
+        Some(it) => extract_newest_key(it),
+        None => None
     }
 }
 
@@ -36,23 +32,21 @@ fn request_redis(studio_id: String, yesterday: bool) -> Option<String> {
         Some(it) => it,
         None => {
             println!("Could not open the redis connection");
-            return Option::None;
+            return None;
         }
     };
-    let key = create_key(&studio_id, yesterday);
-    if key.is_none() {
-        return Option::None;
-    } else {
-        let unwraped_key = key.unwrap();
-        match connection.get(&unwraped_key) {
-            Ok(it) => {
-                match it {
-                    Some(res) => res,
-                    None => load_and_save_data(studio_id, &mut connection, unwraped_key.to_string())
-                }
+    let key = match create_key(&studio_id, yesterday) {
+        Some(it) => it,
+        None => return None
+    };
+    match connection.get(&key) {
+        Ok(it) => {
+            match it {
+                Some(res) => res,
+                None => load_and_save_data(studio_id, &mut connection, key.to_string())
             }
-            Err(_err) => load_and_save_data(studio_id, &mut connection, unwraped_key.to_string())
         }
+        Err(_err) => load_and_save_data(studio_id, &mut connection, key.to_string())
     }
 }
 
@@ -65,16 +59,11 @@ fn john_reed_data(studio: String) -> Result<String, Error> {
 }
 
 fn create_key(studio_id: &String, yesterday: bool) -> Option<String> {
-    let mut key = create_current_key(&studio_id);
+    let mut key = Option::from(create_current_key(&studio_id));
     if yesterday {
-        let key_from_yesterday = load_newest_key_from_redis(studio_id.to_string(), yesterday.clone());
-        if key_from_yesterday.is_some() {
-            key = String::from(key_from_yesterday.unwrap());
-        } else {
-            return Option::None;
-        }
+        key = load_newest_key_from_redis(studio_id.to_string(), yesterday.clone());
     }
-    Option::from(key)
+    key
 }
 
 fn load_and_save_data(studio_id: String, connection: &mut Connection, unwraped_key: String) -> Option<String> {
@@ -93,7 +82,7 @@ fn load_and_save_data(studio_id: String, connection: &mut Connection, unwraped_k
             };
             john_reed_data
         }
-        None => Option::None
+        None => None
     };
     unwraped_john_reed_data
 }
