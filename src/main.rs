@@ -9,6 +9,46 @@ use redis::{Commands, Connection};
 use chrono::{Local, Duration};
 use reqwest::Error;
 
+#[get("/keys?<studio_id>&<yesterday>")]
+fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Result<String, Error> {
+    let mut connection = open_redis_connection();
+    let key = create_redis_search_key(&studio_id, yesterday);
+    let redis_keys: Vec<String> = match connection.keys(&key) {
+        Ok(f) => f,
+        Err(_err) => panic!(format!("No keys found for studio with id: {} and key: {}", &studio_id, &key))
+    };
+    extract_newest_key(redis_keys)
+}
+
+#[get("/?<studio_id>&<yesterday>")]
+fn request_redis(studio_id: String, yesterday: bool) -> Result<String, Error> {
+    let mut connection = open_redis_connection();
+    let mut key = create_current_key(&studio_id);
+    if yesterday {
+        key = match load_newest_key_from_redis(studio_id.to_string(), yesterday.clone()) {
+            Ok(it) => it,
+            Err(_err) => panic!("Fail to create newest key for yesterday")
+        };
+    }
+    let return_val = match connection.get(&key) {
+        Ok(f) => f,
+        Err(_err) => {
+            let new_data = john_reed_data(studio_id.to_string())?;
+            let _: () = connection.set(&key, &new_data).unwrap();
+            new_data
+        }
+    };
+    Ok(return_val)
+}
+
+#[get("/jr?<studio>")]
+fn john_reed_data(studio: String) -> Result<String, Error> {
+    let url = format!("https://typo3.johnreed.fitness/studiocapacity.json?studioId={}", studio);
+    let body = reqwest::blocking::get(&url)?
+        .text();
+    body
+}
+
 fn open_redis_connection() -> Connection {
     let client = match redis::Client::open("redis://127.0.0.1/") {
         Ok(it) => it,
@@ -43,51 +83,11 @@ fn create_redis_search_key(studio_id: &String, yesterday: bool) -> String {
     key
 }
 
-#[get("/keys?<studio_id>&<yesterday>")]
-fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Result<String, Error> {
-    let mut connection = open_redis_connection();
-    let key = create_redis_search_key(&studio_id, yesterday);
-    let redis_keys: Vec<String> = match connection.keys(&key) {
-        Ok(f) => f,
-        Err(_err) => panic!(format!("No keys found for studio with id: {} and key: {}", &studio_id, &key))
-    };
-    extract_newest_key(redis_keys)
-}
-
-#[get("/?<studio_id>&<yesterday>")]
-fn request_redis(studio_id: String, yesterday: bool) -> Result<String, Error> {
-    let mut connection = open_redis_connection();
-    let mut key = create_current_key(&studio_id);
-    if yesterday {
-        key = match load_newest_key_from_redis(studio_id.to_string(), yesterday.clone()) {
-            Ok(it) => it,
-            Err(_err) => panic!("Fail to create newest key for yesterday")
-        };
-    }
-    let return_val = match connection.get(&key) {
-        Ok(f) => f,
-        Err(_err) => {
-            let new_data = john_reed_data(studio_id.to_string())?;
-            let _ : () = connection.set(&key, &new_data).unwrap();
-            new_data
-        }
-    };
-    Ok(return_val)
-}
-
 fn create_current_key(studio_id: &String) -> String {
     let now = Local::now();
     let date_formatted_string = now.format("%Y-%m-%d-%H").to_string();
     let key = studio_id.to_string() + &date_formatted_string;
     key
-}
-
-#[get("/jr?<studio>")]
-fn john_reed_data(studio: String) -> Result<String, Error> {
-    let url = format!("https://typo3.johnreed.fitness/studiocapacity.json?studioId={}",studio);
-    let body = reqwest::blocking::get(&url)?
-        .text();
-    body
 }
 
 fn main() {
