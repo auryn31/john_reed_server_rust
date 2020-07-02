@@ -5,91 +5,88 @@ extern crate rocket;
 extern crate chrono;
 extern crate reqwest;
 
+use chrono::{Duration, Local};
 use redis::{Commands, Connection};
-use chrono::{Local, Duration};
-use reqwest::Error;
+use rocket::http::Status;
 
 #[get("/keys?<studio_id>&<yesterday>")]
-fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Result<String, Error> {
-    let mut connection = open_redis_connection();
+fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Result<String, Status> {
+    let mut connection = open_redis_connection()?;
     let key = create_redis_search_key(&studio_id, yesterday);
-    let redis_keys: Vec<String> = match connection.keys(&key) {
-        Ok(f) => f,
-        Err(_err) => panic!(format!("No keys found for studio with id: {} and key: {}", &studio_id, &key))
-    };
-    extract_newest_key(redis_keys)
+    let redis_keys = connection
+        .keys::<&str, Option<Vec<String>>>(&key)
+        .or(Err(Status::InternalServerError))?
+        .ok_or(Status::NotFound)?;
+    match extract_newest_key(redis_keys) {
+        Some(val) => Ok(val),
+        None => Err(Status::NotFound),
+    }
 }
 
 #[get("/?<studio_id>&<yesterday>")]
-fn request_redis(studio_id: String, yesterday: bool) -> Result<String, Error> {
-    let mut connection = open_redis_connection();
-    let mut key = create_current_key(&studio_id);
-    if yesterday {
-        key = match load_newest_key_from_redis(studio_id.to_string(), yesterday.clone()) {
-            Ok(it) => it,
-            Err(_err) => panic!("Fail to create newest key for yesterday")
-        };
-    }
-    let return_val = match connection.get(&key) {
-        Ok(f) => f,
-        Err(_err) => {
-            let new_data = john_reed_data(studio_id.to_string())?;
-            let _: () = connection.set(&key, &new_data).unwrap();
-            new_data
-        }
+fn request_redis(studio_id: String, yesterday: bool) -> Result<String, Status> {
+    let mut connection = open_redis_connection()?;
+    let key = if yesterday {
+        load_newest_key_from_redis(studio_id.to_string(), yesterday)?
+    } else {
+        create_current_key(&studio_id)
     };
-    Ok(return_val)
+    connection.get(&key).or_else(|_err| {
+        let new_data = john_reed_data(studio_id.to_string())?;
+        let _: () = connection.set(&key, &new_data).unwrap();
+        Ok(new_data)
+    })
 }
 
 #[get("/jr?<studio>")]
-fn john_reed_data(studio: String) -> Result<String, Error> {
-    let url = format!("https://typo3.johnreed.fitness/studiocapacity.json?studioId={}", studio);
-    let body = reqwest::blocking::get(&url)?
-        .text();
-    body
+fn john_reed_data(studio: String) -> Result<String, Status> {
+    let url = format!(
+        "https://typo3.johnreed.fitness/studiocapacity.json?studioId={}",
+        studio
+    );
+    reqwest::blocking::get(&url)
+        .and_then(|res| res.text())
+        .or(Err(Status::NotFound))
 }
 
-fn open_redis_connection() -> Connection {
-    let client = match redis::Client::open("redis://127.0.0.1/") {
-        Ok(it) => it,
-        Err(_err) => panic!("Could not reach redis")
-    };
-    match client.get_connection() {
-        Ok(it) => it,
-        Err(_err) => panic!("Could not create a connection to redis")
-    }
+fn open_redis_connection() -> Result<Connection, Status> {
+    redis::Client::open("redis://127.0.0.1/")
+        .and_then(|res| res.get_connection())
+        .or(Err(Status::InternalServerError))
 }
 
-fn extract_newest_key(mut redis_keys: Vec<String>) -> Result<String, Error> {
-    if redis_keys.len() == 0 {
-        panic!("The array of keys is empty")
-    }
-    if redis_keys.len() == 1 {
-        Ok(redis_keys.get(0).unwrap().to_string())
+fn extract_newest_key(mut redis_keys: Vec<String>) -> Option<String> {
+    if redis_keys.is_empty() {
+        None
     } else {
-        redis_keys.sort();
-        redis_keys.reverse();
-        Ok(redis_keys.get(0).unwrap().to_string())
+        if redis_keys.len() != 1 {
+            redis_keys.sort();
+            redis_keys.reverse();
+        }
+        redis_keys.get(0).map(|val| val.to_string())
     }
 }
 
-fn create_redis_search_key(studio_id: &String, yesterday: bool) -> String {
+fn create_redis_search_key(studio_id: &str, yesterday: bool) -> String {
     let mut now = Local::now();
     if yesterday {
         now = now - Duration::days(1);
     }
     let date_formatted_string = now.format("%Y-%m-%d-*").to_string();
-    let key = studio_id.to_string() + &date_formatted_string;
-    key
+    studio_id.to_string() + &date_formatted_string
 }
 
-fn create_current_key(studio_id: &String) -> String {
+fn create_current_key(studio_id: &str) -> String {
     let now = Local::now();
     let date_formatted_string = now.format("%Y-%m-%d-%H").to_string();
-    let key = studio_id.to_string() + &date_formatted_string;
-    key
+    studio_id.to_string() + &date_formatted_string
 }
 
 fn main() {
-    rocket::ignite().mount("/", routes![request_redis, john_reed_data, load_newest_key_from_redis]).launch();
+    rocket::ignite()
+        .mount(
+            "/",
+            routes![request_redis, john_reed_data, load_newest_key_from_redis],
+        )
+        .launch();
 }
