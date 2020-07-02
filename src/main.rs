@@ -33,7 +33,7 @@ fn request_redis(studio_id: String, yesterday: bool) -> Result<String, Status> {
     };
     connection.get(&key).or_else(|_err| {
         let new_data = john_reed_data(studio_id.to_string())?;
-        let _: () = connection.set(&key, &new_data).unwrap();
+        let _: Result<String, redis::RedisError> = connection.set(&key, &new_data);
         Ok(new_data)
     })
 }
