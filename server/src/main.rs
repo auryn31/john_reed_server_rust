@@ -9,7 +9,7 @@ use redis::{Commands, Connection};
 use chrono::{Local, Duration};
 use reqwest::Error;
 
-#[get("/keys?<studio_id>&<yesterday>")]
+// #[get("/keys?<studio_id>&<yesterday>")]
 fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Option<String> {
     let mut connection = open_redis_connection()?;
     let key = create_redis_search_key(&studio_id, yesterday);
@@ -26,8 +26,8 @@ fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Option<Stri
     }
 }
 
-#[get("/?<studio_id>&<yesterday>")]
-fn request_redis(studio_id: String, yesterday: bool) -> Option<String> {
+#[get("/?<studio>&<yesterday>")]
+fn request_redis(studio: String, yesterday: bool) -> Option<String> {
     let mut connection = match open_redis_connection() {
         Some(it) => it,
         None => {
@@ -35,7 +35,7 @@ fn request_redis(studio_id: String, yesterday: bool) -> Option<String> {
             return None;
         }
     };
-    let key = match create_key(&studio_id, yesterday) {
+    let key = match create_key(&studio, yesterday) {
         Some(it) => it,
         None => return None
     };
@@ -43,14 +43,14 @@ fn request_redis(studio_id: String, yesterday: bool) -> Option<String> {
         Ok(it) => {
             match it {
                 Some(res) => res,
-                None => load_and_save_data(studio_id, &mut connection, key.to_string())
+                None => load_and_save_data(studio, &mut connection, key.to_string())
             }
         }
-        Err(_err) => load_and_save_data(studio_id, &mut connection, key.to_string())
+        Err(_err) => load_and_save_data(studio, &mut connection, key.to_string())
     }
 }
 
-#[get("/jr?<studio>")]
+// #[get("/jr?<studio>")]
 fn john_reed_data(studio: String) -> Result<String, Error> {
     let url = format!("https://typo3.johnreed.fitness/studiocapacity.json?studioId={}", studio);
     let body = reqwest::blocking::get(&url)?
@@ -133,5 +133,5 @@ fn create_current_key(studio_id: &String) -> String {
 }
 
 fn main() {
-    rocket::ignite().mount("/", routes![request_redis, john_reed_data, load_newest_key_from_redis]).launch();
+    rocket::ignite().mount("/", routes![request_redis]).launch();
 }
