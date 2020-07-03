@@ -88,7 +88,7 @@ fn load_and_save_data(studio_id: String, connection: &mut Connection, unwraped_k
 }
 
 fn open_redis_connection() -> Option<Connection> {
-    let client = match redis::Client::open("redis://127.0.0.1/") {
+    let client = match redis::Client::open("redis://redis/") {
         Ok(it) => it,
         Err(_err) => panic!("Could not reach redis")
     };
