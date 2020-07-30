@@ -5,131 +5,105 @@ extern crate rocket;
 extern crate chrono;
 extern crate reqwest;
 
+use anyhow::Result;
+use chrono::{Duration, Local};
 use redis::{Commands, Connection};
-use chrono::{Local, Duration};
-use reqwest::Error;
 
 // #[get("/keys?<studio_id>&<yesterday>")]
-fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Option<String> {
+fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Result<Option<String>> {
     let mut connection = open_redis_connection()?;
     let key = create_redis_search_key(&studio_id, yesterday);
-    let redis_keys: Option<Vec<String>> = match connection.keys(&key) {
-        Ok(it) => it,
-        Err(_err) => {
-            println!("No keys found for studio with id: {} and key: {}", &studio_id, &key);
-            None
-        }
-    };
+    let redis_keys = connection.keys(&key)?;
     match redis_keys {
-        Some(it) => extract_newest_key(it),
-        None => None
+        Some(it) => {
+            let keys = extract_newest_key(it)?;
+            Ok(Some(keys))
+        }
+        None => Ok(None),
     }
 }
 
 #[get("/?<studio>&<yesterday>")]
-fn request_redis(studio: String, yesterday: bool) -> Option<String> {
-    let mut connection = match open_redis_connection() {
-        Some(it) => it,
-        None => {
-            println!("Could not open the redis connection");
-            return None;
-        }
-    };
-    let key = match create_key(&studio, yesterday) {
-        Some(it) => it,
-        None => return None
-    };
+fn request_redis(studio: String, yesterday: bool) -> Result<String> {
+    let mut connection = open_redis_connection()?;
+    let key = create_key(&studio, yesterday)?;
     match connection.get(&key) {
-        Ok(it) => {
-            match it {
-                Some(res) => res,
-                None => load_and_save_data(studio, &mut connection, key.to_string())
-            }
-        }
-        Err(_err) => load_and_save_data(studio, &mut connection, key.to_string())
+        Ok(it) => match it {
+            Some(res) => Ok(res),
+            None => Ok(load_and_save_data(studio, &mut connection, key)?),
+        },
+        Err(_err) => load_and_save_data(studio, &mut connection, key),
     }
 }
 
 // #[get("/jr?<studio>")]
-fn john_reed_data(studio: String) -> Result<String, Error> {
-    let url = format!("https://typo3.johnreed.fitness/studiocapacity.json?studioId={}", studio);
-    let body = reqwest::blocking::get(&url)?
-        .text();
-    body
+fn john_reed_data(studio: String) -> Result<String> {
+    let url = format!(
+        "https://typo3.johnreed.fitness/studiocapacity.json?studioId={}",
+        studio
+    );
+    let body = reqwest::blocking::get(&url)?.text()?;
+    Ok(body)
 }
 
-fn create_key(studio_id: &String, yesterday: bool) -> Option<String> {
-    let mut key = Option::from(create_current_key(&studio_id));
+fn create_key(studio_id: &str, yesterday: bool) -> Result<String> {
+    let mut key = create_current_key(&studio_id);
     if yesterday {
-        key = load_newest_key_from_redis(studio_id.to_string(), yesterday.clone());
+        key = match load_newest_key_from_redis(studio_id.to_string(), yesterday) {
+            Ok(Some(it)) => it,
+            _ => return Err(anyhow::Error::msg("Could not load newest key from redis")),
+        };
     }
-    key
+    Ok(key)
 }
 
-fn load_and_save_data(studio_id: String, connection: &mut Connection, unwraped_key: String) -> Option<String> {
-    let john_reed_data = match john_reed_data(studio_id.to_string()) {
-        Ok(it) => Option::from(it),
-        _ => {
-            println!("Could not load data from John Reed");
-            Option::None
-        }
-    };
-    let unwraped_john_reed_data = match &john_reed_data {
-        Some(it) => {
-            let _: () = match connection.set(&unwraped_key, it) {
-                Ok(it) => it,
-                _ => { println!("Could not save data to redis") }
-            };
-            john_reed_data
-        }
-        None => None
-    };
-    unwraped_john_reed_data
+fn load_and_save_data(
+    studio_id: String,
+    connection: &mut Connection,
+    unwraped_key: String,
+) -> Result<String> {
+    let john_reed_data = john_reed_data(studio_id)?;
+    connection.set(&unwraped_key, john_reed_data.clone())?;
+    Ok(john_reed_data)
 }
 
-fn open_redis_connection() -> Option<Connection> {
-    let client = match redis::Client::open("redis://redis/") {
-        Ok(it) => it,
-        Err(_err) => panic!("Could not reach redis")
-    };
-    match client.get_connection() {
-        Ok(it) => Option::from(it),
-        Err(_err) => {
-            println!("Could not get a connection");
-            Option::None
-        }
-    }
+fn open_redis_connection() -> anyhow::Result<Connection> {
+    let client = redis::Client::open("redis://localhost:6379/")?;
+    let connection = client.get_connection()?;
+    Ok(connection)
 }
 
-fn extract_newest_key(mut redis_keys: Vec<String>) -> Option<String> {
-    if redis_keys.len() == 0 {
-        println!("The array of keys is empty");
-        return Option::None;
-    }
-    return if redis_keys.len() == 1 {
-        Option::from(redis_keys.get(0).unwrap().to_string())
+fn extract_newest_key(mut redis_keys: Vec<String>) -> Result<String> {
+    if redis_keys.is_empty() {
+        Err(anyhow::Error::msg("The array of keys is empty"))
+    } else if redis_keys.len() == 1 {
+        match redis_keys.get(0) {
+            Some(it) => Ok(it.to_owned()),
+            None => Err(anyhow::Error::msg("")),
+        }
     } else {
         redis_keys.sort();
         redis_keys.reverse();
-        Option::from(redis_keys.get(0).unwrap().to_string())
-    };
+        match redis_keys.get(0) {
+            Some(it) => Ok(it.to_owned()),
+            None => Err(anyhow::Error::msg("")),
+        }
+    }
 }
 
-fn create_redis_search_key(studio_id: &String, yesterday: bool) -> String {
+fn create_redis_search_key(studio_id: &str, yesterday: bool) -> String {
     let mut now = Local::now();
     if yesterday {
         now = now - Duration::days(1);
     }
     let date_formatted_string = now.format("%Y-%m-%d-*").to_string();
-    let key = studio_id.to_string() + &date_formatted_string;
-    key
+    studio_id.to_string() + &date_formatted_string
 }
 
-fn create_current_key(studio_id: &String) -> String {
+fn create_current_key(studio_id: &str) -> String {
     let now = Local::now();
     let date_formatted_string = now.format("%Y-%m-%d-%H").to_string();
-    let key = studio_id.to_string() + &date_formatted_string;
-    key
+    studio_id.to_string() + &date_formatted_string
 }
 
 fn main() {
