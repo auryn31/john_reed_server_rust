@@ -9,7 +9,6 @@ use anyhow::Result;
 use chrono::{Duration, Local};
 use redis::{Commands, Connection};
 
-// #[get("/keys?<studio_id>&<yesterday>")]
 fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Result<Option<String>> {
     let mut connection = open_redis_connection()?;
     let key = create_redis_search_key(&studio_id, yesterday);
@@ -36,7 +35,6 @@ fn request_redis(studio: String, yesterday: bool) -> Result<String> {
     }
 }
 
-// #[get("/jr?<studio>")]
 fn john_reed_data(studio: String) -> Result<String> {
     let url = format!(
         "https://typo3.johnreed.fitness/studiocapacity.json?studioId={}",
