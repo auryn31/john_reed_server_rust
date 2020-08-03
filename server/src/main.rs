@@ -1,13 +1,12 @@
 extern crate chrono;
 extern crate reqwest;
 
-use actix_web::{get, web, App, HttpServer, middleware};
+use actix_web::{get, middleware, web, App, HttpServer};
 use anyhow::Result;
 use chrono::{Duration, Local};
 use redis::{Commands, Connection};
 use serde::Deserialize;
 
-// #[get("/keys?<studio_id>&<yesterday>")]
 fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Result<Option<String>> {
     let mut connection = open_redis_connection()?;
     let key = create_redis_search_key(&studio_id, yesterday);
@@ -28,8 +27,10 @@ struct RequestParams {
 }
 
 #[get("/")]
-async fn request_redis(web::Query(params): web::Query<RequestParams>) -> actix_web::Result<actix_web::HttpResponse> {
-    println!("{:?}",params);
+async fn request_redis(
+    web::Query(params): web::Query<RequestParams>,
+) -> actix_web::Result<actix_web::HttpResponse> {
+    println!("{:?}", params);
     let mut connection =
         open_redis_connection().map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
     let key = create_key(&params.studio, params.yesterday)
@@ -37,15 +38,15 @@ async fn request_redis(web::Query(params): web::Query<RequestParams>) -> actix_w
     let resp = match connection.get(&key) {
         Ok(it) => match it {
             Some(res) => Ok(res),
-            None => Ok(load_and_save_data(params.studio, &mut connection, key).await
+            None => Ok(load_and_save_data(params.studio, &mut connection, key)
+                .await
                 .map_err(|e| actix_web::error::ErrorInternalServerError(e))?),
         },
-        Err(_err) => load_and_save_data(params.studio, &mut connection, key).await
+        Err(_err) => load_and_save_data(params.studio, &mut connection, key)
+            .await
             .map_err(|e| actix_web::error::ErrorInternalServerError(e)),
     };
-    resp.map(|it| {
-        actix_web::HttpResponse::Ok().body(it)
-    })
+    resp.map(|it| actix_web::HttpResponse::Ok().body(it))
 }
 
 async fn john_reed_data(studio: String) -> Result<String> {
@@ -78,7 +79,7 @@ async fn load_and_save_data(
     Ok(john_reed_data)
 }
 
-fn open_redis_connection() -> anyhow::Result<Connection> {
+fn open_redis_connection() -> Result<Connection> {
     let client = redis::Client::open("redis://redis/")?;
     let connection = client.get_connection()?;
     Ok(connection)
@@ -97,7 +98,9 @@ fn extract_newest_key(mut redis_keys: Vec<String>) -> Result<String> {
         redis_keys.reverse();
         match redis_keys.get(0) {
             Some(it) => Ok(it.to_owned()),
-            None => Err(anyhow::Error::msg("")),
+            None => Err(anyhow::Error::msg(
+                "The array of keys is empty but it reached the sort function",
+            )),
         }
     }
 }
@@ -121,10 +124,12 @@ fn create_current_key(studio_id: &str) -> String {
 async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "info");
     env_logger::init();
-    HttpServer::new(|| App::new()
-        .wrap(middleware::Logger::default())
-        .service(request_redis))
-        .bind("0.0.0.0:8000")?
-        .run()
-        .await
+    HttpServer::new(|| {
+        App::new()
+            .wrap(middleware::Logger::default())
+            .service(request_redis)
+    })
+    .bind("0.0.0.0:8000")?
+    .run()
+    .await
 }
