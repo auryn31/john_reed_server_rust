@@ -1,5 +1,5 @@
 [package]
-name = "hello-rocket"
+name = "john-reed-server"
 version = "0.1.0"
 authors = ["Auryn Engel <auryn.engel@sap.com>"]
 edition = "2018"
@@ -14,4 +14,4 @@ chrono = "0.4.13"
 reqwest = { version = "0.10.7", features = ["blocking"] }
 anyhow = "1.0.32"
 serde = {version = "1.0.114", features= ["derive"]}
-env_logger = "0.7"
+env_logger = "0.7.1"
