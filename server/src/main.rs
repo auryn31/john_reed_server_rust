@@ -1,13 +1,11 @@
-#![feature(proc_macro_hygiene, decl_macro)]
-
-#[macro_use]
-extern crate rocket;
 extern crate chrono;
 extern crate reqwest;
 
+use actix_web::{get, web, App, HttpServer, middleware};
 use anyhow::Result;
 use chrono::{Duration, Local};
 use redis::{Commands, Connection};
+use serde::Deserialize;
 
 // #[get("/keys?<studio_id>&<yesterday>")]
 fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Result<Option<String>> {
@@ -23,26 +21,39 @@ fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Result<Opti
     }
 }
 
-#[get("/?<studio>&<yesterday>")]
-fn request_redis(studio: String, yesterday: bool) -> Result<String> {
-    let mut connection = open_redis_connection()?;
-    let key = create_key(&studio, yesterday)?;
-    match connection.get(&key) {
-        Ok(it) => match it {
-            Some(res) => Ok(res),
-            None => Ok(load_and_save_data(studio, &mut connection, key)?),
-        },
-        Err(_err) => load_and_save_data(studio, &mut connection, key),
-    }
+#[derive(Deserialize, Debug)]
+struct RequestParams {
+    studio: String,
+    yesterday: bool,
 }
 
-// #[get("/jr?<studio>")]
-fn john_reed_data(studio: String) -> Result<String> {
+#[get("/")]
+async fn request_redis(web::Query(params): web::Query<RequestParams>) -> actix_web::Result<actix_web::HttpResponse> {
+    println!("{:?}",params);
+    let mut connection =
+        open_redis_connection().map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    let key = create_key(&params.studio, params.yesterday)
+        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    let resp = match connection.get(&key) {
+        Ok(it) => match it {
+            Some(res) => Ok(res),
+            None => Ok(load_and_save_data(params.studio, &mut connection, key).await
+                .map_err(|e| actix_web::error::ErrorInternalServerError(e))?),
+        },
+        Err(_err) => load_and_save_data(params.studio, &mut connection, key).await
+            .map_err(|e| actix_web::error::ErrorInternalServerError(e)),
+    };
+    resp.map(|it| {
+        actix_web::HttpResponse::Ok().body(it)
+    })
+}
+
+async fn john_reed_data(studio: String) -> Result<String> {
     let url = format!(
         "https://typo3.johnreed.fitness/studiocapacity.json?studioId={}",
         studio
     );
-    let body = reqwest::blocking::get(&url)?.text()?;
+    let body = reqwest::get(&url).await?.text().await?;
     Ok(body)
 }
 
@@ -57,18 +68,18 @@ fn create_key(studio_id: &str, yesterday: bool) -> Result<String> {
     Ok(key)
 }
 
-fn load_and_save_data(
+async fn load_and_save_data(
     studio_id: String,
     connection: &mut Connection,
     unwraped_key: String,
 ) -> Result<String> {
-    let john_reed_data = john_reed_data(studio_id)?;
+    let john_reed_data = john_reed_data(studio_id).await?;
     connection.set(&unwraped_key, john_reed_data.clone())?;
     Ok(john_reed_data)
 }
 
 fn open_redis_connection() -> anyhow::Result<Connection> {
-    let client = redis::Client::open("redis://localhost:6379/")?;
+    let client = redis::Client::open("redis://redis/")?;
     let connection = client.get_connection()?;
     Ok(connection)
 }
@@ -106,6 +117,14 @@ fn create_current_key(studio_id: &str) -> String {
     studio_id.to_string() + &date_formatted_string
 }
 
-fn main() {
-    rocket::ignite().mount("/", routes![request_redis]).launch();
+#[actix_rt::main]
+async fn main() -> std::io::Result<()> {
+    std::env::set_var("RUST_LOG", "info");
+    env_logger::init();
+    HttpServer::new(|| App::new()
+        .wrap(middleware::Logger::default())
+        .service(request_redis))
+        .bind("0.0.0.0:8000")?
+        .run()
+        .await
 }
