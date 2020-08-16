@@ -5,9 +5,14 @@ extern crate rocket;
 extern crate chrono;
 extern crate reqwest;
 
+#[path ="model/model.rs"]
+mod model;
+
 use anyhow::Result;
 use chrono::{Duration, Local};
 use redis::{Commands, Connection};
+
+use model::ResponseData;
 
 fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Result<Option<String>> {
     let mut connection = open_redis_connection()?;
@@ -35,13 +40,30 @@ fn request_redis(studio: String, yesterday: bool) -> Result<String> {
     }
 }
 
-fn john_reed_data(studio: String) -> Result<String> {
+pub mod items {
+    include!(concat!(env!("OUT_DIR"), "/response.data.rs"));
+}
+#[get("/proto?<studio>&<yesterday>")]
+fn request_protp(studio: String, yesterday: bool) -> Result<items::ResponseData> {
+    let mut connection = open_redis_connection()?;
+    let key = create_key(&studio, yesterday)?;
+    match connection.get(&key) {
+        Ok(it) => match it {
+            Some(res) => Ok(res),
+            None => Ok(load_and_save_data_proto(studio, &mut connection, key)?),
+        },
+        Err(_err) => load_and_save_data_proto(studio, &mut connection, key),
+    }
+}
+
+fn john_reed_data(studio: String) -> Result<ResponseData> {
     let url = format!(
         "https://typo3.johnreed.fitness/studiocapacity.json?studioId={}",
         studio
     );
     let body = reqwest::blocking::get(&url)?.text()?;
-    Ok(body)
+    let data = serde_json::from_str::<ResponseData>(&body)?;
+    Ok(data)
 }
 
 fn create_key(studio_id: &str, yesterday: bool) -> Result<String> {
@@ -61,8 +83,22 @@ fn load_and_save_data(
     unwraped_key: String,
 ) -> Result<String> {
     let john_reed_data = john_reed_data(studio_id)?;
-    connection.set(&unwraped_key, john_reed_data.clone())?;
-    Ok(john_reed_data)
+    let response_string = serde_json::to_string(&john_reed_data)?;
+    connection.set(&unwraped_key, response_string.clone())?;
+    Ok(response_string)
+}
+
+fn load_and_save_data_proto(
+    studio_id: String,
+    connection: &mut Connection,
+    unwraped_key: String,
+) -> Result<items::ResponseData> {
+    let john_reed_data = john_reed_data(studio_id)?;
+    let response_string = serde_json::to_string(&john_reed_data)?;
+    connection.set(&unwraped_key, response_string.clone())?;
+    let mut response_data = items::ResponseData::default();
+    response_data.start_time = john_reed_data.start_time;
+    Ok(response_data)
 }
 
 fn open_redis_connection() -> anyhow::Result<Connection> {
