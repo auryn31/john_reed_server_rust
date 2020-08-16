@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package response.data;
+
+
+message ResponseData {
+    message DataEntry {
+
+        enum Level {
+            LOW = 0;
+            NORMAL = 1;
+            HIGH = 2;
+        }
+
+
+        string startTime = 1;
+        string endTime = 2;
+        int32 percentage = 3;
+        Level level = 4;
+        bool isCurrent = 5;
+    }
+
+    
+
+string startTime = 1;
+string endTime = 2;
+repeated DataEntry items = 3;
+}
