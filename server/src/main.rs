@@ -7,6 +7,9 @@ use anyhow::Result;
 use chrono::{Duration, Local};
 use redis::{Commands, Connection};
 use serde::Deserialize;
+#[path ="model/model.rs"]
+mod model;
+use model::ResponseData;
 
 fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Result<Option<String>> {
     let mut connection = open_redis_connection()?;
@@ -66,18 +69,32 @@ async fn request_redis_proto(
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
     let resp = match connection.get(&key) {
         Ok(it) => match it {
-            Some(res) => Ok(res),
-            None => Ok(load_and_save_data(params.studio, &mut connection, key)
+            Some(res) => {
+                let res: String = res;
+                Ok(serde_json::from_str::<ResponseData>(&res)?)
+            },
+            None => Ok(load_and_save_data_proto(params.studio, &mut connection, key)
                 .await
                 .map_err(|e| actix_web::error::ErrorInternalServerError(e))?),
         },
-        Err(_err) => load_and_save_data(params.studio, &mut connection, key)
+        Err(_err) => load_and_save_data_proto(params.studio, &mut connection, key)
             .await
             .map_err(|e| actix_web::error::ErrorInternalServerError(e)),
     };
     let mut response_data = items::ResponseData::default();
-    response_data.start_time = it.start_time;
-    resp.map(|it| actix_web::HttpResponse::Ok().protobuf(response_data))
+    if let Ok(resp) = resp {
+        response_data.start_time = resp.start_time.clone();
+        response_data.end_time = resp.end_time.clone();
+        response_data.items = resp.items.iter().map(|it| {
+            let mut entry = items::response_data::DataEntry::default();
+            entry.start_time = it.start_time.clone();
+            entry.end_time = it.end_time.clone();
+            entry.percentage = it.percentage.clone().into();
+            entry.is_current = it.is_current.clone();
+            entry
+        }).collect();
+    }
+    actix_web::HttpResponse::Ok().protobuf(response_data)
 }
 
 async fn john_reed_data(studio: String) -> Result<String> {
@@ -101,7 +118,7 @@ fn create_key(studio_id: &str, yesterday: bool) -> Result<String> {
 }
 
 fn open_redis_connection() -> Result<Connection> {
-    let client = redis::Client::open("redis://redis/")?;
+    let client = redis::Client::open("redis://localhost:6379")?;
     let connection = client.get_connection()?;
     Ok(connection)
 }
@@ -112,9 +129,8 @@ async fn load_and_save_data(
     unwraped_key: String,
 ) -> Result<String> {
     let john_reed_data = john_reed_data(studio_id).await?;
-    let response_string = serde_json::to_string(&john_reed_data)?;
-    connection.set(&unwraped_key, response_string.clone())?;
-    Ok(response_string)
+    connection.set(&unwraped_key, john_reed_data.clone())?;
+    Ok(john_reed_data)
 }
 
 async fn load_and_save_data_proto(
@@ -171,6 +187,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(middleware::Logger::default())
             .service(request_redis)
+            .service(request_redis_proto)
     })
     .bind("0.0.0.0:8000")?
     .run()
