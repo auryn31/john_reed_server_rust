@@ -121,11 +121,11 @@ async fn load_and_save_data_proto(
     studio_id: String,
     connection: &mut Connection,
     unwraped_key: String,
-) -> Result<String> {
+) -> Result<ResponseData> {
     let john_reed_data = john_reed_data(studio_id).await?;
-    let response_string = serde_json::to_string(&john_reed_data)?;
-    connection.set(&unwraped_key, response_string.clone())?;
-    Ok(response_string)
+    connection.set(&unwraped_key, john_reed_data.clone())?;
+    let data = serde_json::from_str::<ResponseData>(&john_reed_data)?;
+    Ok(data)
 }
 
 fn extract_newest_key(mut redis_keys: Vec<String>) -> Result<String> {
