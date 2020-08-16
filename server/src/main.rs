@@ -2,6 +2,7 @@ extern crate chrono;
 extern crate reqwest;
 
 use actix_web::{get, middleware, web, App, HttpServer};
+use actix_protobuf::*;
 use anyhow::Result;
 use chrono::{Duration, Local};
 use redis::{Commands, Connection};
@@ -49,6 +50,30 @@ async fn request_redis(
     resp.map(|it| actix_web::HttpResponse::Ok().body(it))
 }
 
+#[get("/proto")]
+async fn request_redis_proto(
+    web::Query(params): web::Query<RequestParams>,
+) -> actix_web::Result<actix_web::HttpResponse> {
+    println!("{:?}", params);
+    let mut connection =
+        open_redis_connection().map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    let key = create_key(&params.studio, params.yesterday)
+        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    let resp = match connection.get(&key) {
+        Ok(it) => match it {
+            Some(res) => Ok(res),
+            None => Ok(load_and_save_data(params.studio, &mut connection, key)
+                .await
+                .map_err(|e| actix_web::error::ErrorInternalServerError(e))?),
+        },
+        Err(_err) => load_and_save_data(params.studio, &mut connection, key)
+            .await
+            .map_err(|e| actix_web::error::ErrorInternalServerError(e)),
+    };
+    
+    resp.map(|it| actix_web::HttpResponse::Ok().protobuf(it))
+}
+
 async fn john_reed_data(studio: String) -> Result<String> {
     let url = format!(
         "https://typo3.johnreed.fitness/studiocapacity.json?studioId={}",
@@ -69,20 +94,32 @@ fn create_key(studio_id: &str, yesterday: bool) -> Result<String> {
     Ok(key)
 }
 
+fn open_redis_connection() -> Result<Connection> {
+    let client = redis::Client::open("redis://redis/")?;
+    let connection = client.get_connection()?;
+    Ok(connection)
+}
+
 async fn load_and_save_data(
     studio_id: String,
     connection: &mut Connection,
     unwraped_key: String,
 ) -> Result<String> {
     let john_reed_data = john_reed_data(studio_id).await?;
-    connection.set(&unwraped_key, john_reed_data.clone())?;
-    Ok(john_reed_data)
+    let response_string = serde_json::to_string(&john_reed_data)?;
+    connection.set(&unwraped_key, response_string.clone())?;
+    Ok(response_string)
 }
 
-fn open_redis_connection() -> Result<Connection> {
-    let client = redis::Client::open("redis://redis/")?;
-    let connection = client.get_connection()?;
-    Ok(connection)
+async fn load_and_save_data_proto(
+    studio_id: String,
+    connection: &mut Connection,
+    unwraped_key: String,
+) -> Result<String> {
+    let john_reed_data = john_reed_data(studio_id).await?;
+    let response_string = serde_json::to_string(&john_reed_data)?;
+    connection.set(&unwraped_key, response_string.clone())?;
+    Ok(response_string)
 }
 
 fn extract_newest_key(mut redis_keys: Vec<String>) -> Result<String> {
