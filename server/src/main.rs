@@ -50,6 +50,11 @@ async fn request_redis(
     resp.map(|it| actix_web::HttpResponse::Ok().body(it))
 }
 
+
+pub mod items {
+    include!(concat!(env!("OUT_DIR"), "/response.data.rs"));
+}
+
 #[get("/proto")]
 async fn request_redis_proto(
     web::Query(params): web::Query<RequestParams>,
@@ -70,8 +75,9 @@ async fn request_redis_proto(
             .await
             .map_err(|e| actix_web::error::ErrorInternalServerError(e)),
     };
-    
-    resp.map(|it| actix_web::HttpResponse::Ok().protobuf(it))
+    let mut response_data = items::ResponseData::default();
+    response_data.start_time = it.start_time;
+    resp.map(|it| actix_web::HttpResponse::Ok().protobuf(response_data))
 }
 
 async fn john_reed_data(studio: String) -> Result<String> {
