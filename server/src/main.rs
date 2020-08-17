@@ -81,9 +81,13 @@ async fn request_redis_proto(
             .await
             .map_err(|e| actix_web::error::ErrorInternalServerError(e)),
     };
+    let response_data = map_response_data(resp?);
+    actix_web::HttpResponse::Ok().protobuf(response_data)
+}
+
+fn map_response_data(resp: ResponseData) -> items::ResponseData {
     let mut response_data = items::ResponseData::default();
-    if let Ok(resp) = resp {
-        response_data.start_time = resp.start_time.clone();
+    response_data.start_time = resp.start_time.clone();
         response_data.end_time = resp.end_time.clone();
         response_data.items = resp.items.iter().map(|it| {
             let mut entry = items::response_data::DataEntry::default();
@@ -91,10 +95,14 @@ async fn request_redis_proto(
             entry.end_time = it.end_time.clone();
             entry.percentage = it.percentage.clone().into();
             entry.is_current = it.is_current.clone();
+            entry.level = match it.level {
+                model::Level::LOW => {items::response_data::data_entry::Level::Low as i32}
+                model::Level::NORMAL => {items::response_data::data_entry::Level::Normal as i32}
+                model::Level::HIGH => {items::response_data::data_entry::Level::High as i32}
+            };
             entry
         }).collect();
-    }
-    actix_web::HttpResponse::Ok().protobuf(response_data)
+    response_data
 }
 
 async fn john_reed_data(studio: String) -> Result<String> {
