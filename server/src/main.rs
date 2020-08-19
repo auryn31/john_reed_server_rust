@@ -1,13 +1,14 @@
 extern crate chrono;
 extern crate reqwest;
 
-use actix_web::{get, middleware, web, App, HttpServer};
 use actix_protobuf::*;
+use actix_web::{get, middleware, web, App, HttpServer};
 use anyhow::Result;
 use chrono::{Duration, Local};
 use redis::{Commands, Connection};
 use serde::Deserialize;
-#[path ="model/model.rs"]
+use std::time::SystemTime;
+#[path = "model/model.rs"]
 mod model;
 use model::ResponseData;
 
@@ -41,7 +42,16 @@ async fn request_redis(
         .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
     let resp = match connection.get(&key) {
         Ok(it) => match it {
-            Some(res) => Ok(res),
+            Some(res) => {
+                let res: String = res;
+                let mut data = serde_json::from_str::<ResponseData>(&res)?;
+                data.items = data
+                    .items
+                    .into_iter()
+                    .filter(|it| it.percentage > 0)
+                    .collect();
+                Ok(data)
+            }
             None => Ok(load_and_save_data(params.studio, &mut connection, key)
                 .await
                 .map_err(|e| actix_web::error::ErrorInternalServerError(e))?),
@@ -50,9 +60,8 @@ async fn request_redis(
             .await
             .map_err(|e| actix_web::error::ErrorInternalServerError(e)),
     };
-    resp.map(|it| actix_web::HttpResponse::Ok().body(it))
+    resp.map(|it| actix_web::HttpResponse::Ok().body(serde_json::json!(it).to_string()))
 }
-
 
 pub mod items {
     include!(concat!(env!("OUT_DIR"), "/response.data.rs"));
@@ -72,10 +81,12 @@ async fn request_redis_proto(
             Some(res) => {
                 let res: String = res;
                 Ok(serde_json::from_str::<ResponseData>(&res)?)
-            },
-            None => Ok(load_and_save_data_proto(params.studio, &mut connection, key)
-                .await
-                .map_err(|e| actix_web::error::ErrorInternalServerError(e))?),
+            }
+            None => Ok(
+                load_and_save_data_proto(params.studio, &mut connection, key)
+                    .await
+                    .map_err(|e| actix_web::error::ErrorInternalServerError(e))?,
+            ),
         },
         Err(_err) => load_and_save_data_proto(params.studio, &mut connection, key)
             .await
@@ -88,20 +99,24 @@ async fn request_redis_proto(
 fn map_response_data(resp: ResponseData) -> items::ResponseData {
     let mut response_data = items::ResponseData::default();
     response_data.start_time = resp.start_time.clone();
-        response_data.end_time = resp.end_time.clone();
-        response_data.items = resp.items.iter().map(|it| {
+    response_data.end_time = resp.end_time.clone();
+    response_data.items = resp
+        .items
+        .iter()
+        .map(|it| {
             let mut entry = items::response_data::DataEntry::default();
             entry.start_time = it.start_time.clone();
             entry.end_time = it.end_time.clone();
             entry.percentage = it.percentage.clone().into();
             entry.is_current = it.is_current.clone();
             entry.level = match it.level {
-                model::Level::LOW => {items::response_data::data_entry::Level::Low as i32}
-                model::Level::NORMAL => {items::response_data::data_entry::Level::Normal as i32}
-                model::Level::HIGH => {items::response_data::data_entry::Level::High as i32}
+                model::Level::LOW => items::response_data::data_entry::Level::Low as i32,
+                model::Level::NORMAL => items::response_data::data_entry::Level::Normal as i32,
+                model::Level::HIGH => items::response_data::data_entry::Level::High as i32,
             };
             entry
-        }).collect();
+        })
+        .collect();
     response_data
 }
 
@@ -135,10 +150,16 @@ async fn load_and_save_data(
     studio_id: String,
     connection: &mut Connection,
     unwraped_key: String,
-) -> Result<String> {
+) -> Result<ResponseData> {
     let john_reed_data = john_reed_data(studio_id).await?;
     connection.set(&unwraped_key, john_reed_data.clone())?;
-    Ok(john_reed_data)
+    let mut data = serde_json::from_str::<ResponseData>(&john_reed_data)?;
+    data.items = data
+        .items
+        .into_iter()
+        .filter(|it| it.percentage > 0)
+        .collect();
+    Ok(data)
 }
 
 async fn load_and_save_data_proto(
@@ -187,8 +208,37 @@ fn create_current_key(studio_id: &str) -> String {
     studio_id.to_string() + &date_formatted_string
 }
 
+async fn load_every_hour(studio_id: &str) -> () {
+    println!("Start laoding for ID: {}", studio_id);
+    if let Ok(key) = create_key(studio_id, false) {
+        if let Ok(mut connection) = open_redis_connection() {
+            if let Ok(_) = load_and_save_data(studio_id.to_owned(), &mut connection, key).await {
+                println!("Loaded data for ID: {}", studio_id);
+            };
+        };
+    };
+}
+
 #[actix_rt::main]
 async fn main() -> std::io::Result<()> {
+    actix_rt::spawn(async {
+        let mut now = SystemTime::now();
+        loop {
+            tokio::time::delay_for(std::time::Duration::from_secs(1200)).await;
+            match now.elapsed() {
+                Ok(elapsed) => {
+                    if elapsed.as_secs() > 3600 {
+                        load_every_hour("1414810010").await;
+                        now = SystemTime::now();
+                    }
+                }
+                Err(e) => {
+                    println!("Error: {:?}", e);
+                }
+            }
+        }
+    });
+
     std::env::set_var("RUST_LOG", "info");
     env_logger::init();
     HttpServer::new(|| {
