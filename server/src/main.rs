@@ -1,16 +1,16 @@
 extern crate chrono;
 extern crate reqwest;
 
+use actix_protobuf::*;
 use actix_web::{get, middleware, web, App, HttpServer};
 use anyhow::Result;
 use chrono::{Duration, Local};
 use redis::{Commands, Connection};
 use serde::Deserialize;
 use std::time::SystemTime;
-use actix_protobuf::*;
 #[path = "model/model.rs"]
 mod model;
-use model::{ResponseData, DataEntry};
+use model::{DataEntry, ResponseData};
 
 fn load_newest_key_from_redis(studio_id: String, yesterday: bool) -> Result<Option<String>> {
     let mut connection = open_redis_connection()?;
@@ -82,11 +82,9 @@ async fn request_redis_proto(
                 let res: String = res;
                 Ok(serde_json::from_str::<ResponseData>(&res)?)
             }
-            None => Ok(
-                load_and_save_data(params.studio, &mut connection, key)
-                    .await
-                    .map_err(|e| actix_web::error::ErrorInternalServerError(e))?,
-            ),
+            None => Ok(load_and_save_data(params.studio, &mut connection, key)
+                .await
+                .map_err(|e| actix_web::error::ErrorInternalServerError(e))?),
         },
         Err(_err) => load_and_save_data(params.studio, &mut connection, key)
             .await
@@ -117,7 +115,7 @@ impl Into<items::response_data::DataEntry> for DataEntry {
                 model::Level::LOW => items::response_data::data_entry::Level::Low as i32,
                 model::Level::NORMAL => items::response_data::data_entry::Level::Normal as i32,
                 model::Level::HIGH => items::response_data::data_entry::Level::High as i32,
-            }
+            },
         }
     }
 }
@@ -189,7 +187,10 @@ fn create_redis_search_key(studio_id: &str, yesterday: bool) -> String {
     if yesterday {
         now = now - Duration::days(1);
         now = now + Duration::hours(2);
-        println!("Seach key for time: {}", now.format("%Y-%m-%d-%H").to_string());
+        println!(
+            "Seach key for time: {}",
+            now.format("%Y-%m-%d-%H").to_string()
+        );
     }
     let date_formatted_string = now.format("%Y-%m-%d-*").to_string();
     studio_id.to_string() + "-" + &date_formatted_string
@@ -198,7 +199,10 @@ fn create_redis_search_key(studio_id: &str, yesterday: bool) -> String {
 fn create_current_key(studio_id: &str) -> String {
     let mut now = Local::now();
     now = now + Duration::hours(2);
-    println!("Seach key for time: {}", now.format("%Y-%m-%d-%H").to_string());
+    println!(
+        "Seach key for time: {}",
+        now.format("%Y-%m-%d-%H").to_string()
+    );
     let date_formatted_string = now.format("%Y-%m-%d-%H").to_string();
     studio_id.to_string() + "-" + &date_formatted_string
 }
@@ -215,9 +219,15 @@ async fn load_every_hour(studio_id: &str) -> () {
 }
 
 #[actix_rt::main]
-async fn main() -> std::io::Result<()> {   
+async fn main() -> std::io::Result<()> {
     actix_rt::spawn(async {
-        let ids = vec!["1414810010", "1642026390", "1584024160", "1414770410", "1404492860"];
+        let ids = vec![
+            "1414810010",
+            "1642026390",
+            "1584024160",
+            "1414770410",
+            "1404492860",
+        ];
         let mut now = SystemTime::now();
         loop {
             tokio::time::delay_for(std::time::Duration::from_secs(1200)).await;
